@@ -1,3 +1,9 @@
 name = "ironlog-proxy"
 main = "src/index.js"
 compatibility_date = "2025-01-01"
+
+[[unsafe.bindings]]
+name = "RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 3, period = 60 }
