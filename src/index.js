@@ -4,7 +4,7 @@ const err = (msg, status, origin = '') => new Response(
 );
 
 const MODELS = [
-  'gemini-flash-latest',
+  'gemini-3.1-flash-lite',
   'gemma-4-31b-it',
 ];
 
