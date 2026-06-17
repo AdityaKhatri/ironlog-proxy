@@ -3,6 +3,24 @@ const err = (msg, status, origin = '') => new Response(
   { status, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': origin } }
 );
 
+const MODELS = [
+  'gemini-flash-latest',
+  'gemma-4-31b-it',
+];
+
+const callGemini = async (model, prompt, apiKey) => {
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+    }
+  );
+  const data = await res.json();
+  return { res, data };
+};
+
 export default {
   async fetch(request, env) {
 
@@ -44,44 +62,38 @@ export default {
       return err('Bad Request: prompt required', 400, origin);
     }
 
-    // Enforce rate limit: 20 requests per hour per IP
+    // Enforce rate limit: 3 requests per minute per IP
     const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
     const { success } = await env.RATE_LIMITER.limit({ key: ip });
     if (!success) return err('Too many requests. Please wait a moment before trying again.', 429, origin);
 
-    // Forward to Gemini — no modification to prompt, no business logic
-    let geminiRes, data;
-    try {
-      geminiRes = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${env.GEMINI_API_KEY}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }]
-          })
-        }
-      );
-      data = await geminiRes.json();
-    } catch (e) {
-      console.error('Gemini fetch failed:', e);
-      return err('Bad Gateway: could not reach Gemini', 502, origin);
+    // Try each model in order, falling back on error
+    let lastData, lastStatus;
+    for (const model of MODELS) {
+      let res, data;
+      try {
+        ({ res, data } = await callGemini(model, prompt, env.GEMINI_API_KEY));
+      } catch (e) {
+        console.error(`Gemini fetch failed (${model}):`, e);
+        continue;
+      }
+
+      if (res.ok) {
+        return new Response(JSON.stringify(data), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': origin }
+        });
+      }
+
+      console.error(`Gemini error (${model}):`, res.status, JSON.stringify(data));
+      lastData = data;
+      lastStatus = res.status;
     }
 
-    if (!geminiRes.ok) {
-      console.error('Gemini error:', geminiRes.status, JSON.stringify(data));
-      if (data?.error?.status === 'RESOURCE_EXHAUSTED') {
-        return err('AI quota exceeded. Please try again tomorrow.', 503, origin);
-      }
+    // All models failed
+    if (lastData?.error?.status === 'RESOURCE_EXHAUSTED') {
+      return err('AI quota exceeded. Please try again tomorrow.', 503, origin);
     }
-
-    // Return Gemini's raw response — client is responsible for parsing
-    return new Response(JSON.stringify(data), {
-      status: geminiRes.status,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': origin,
-      }
-    });
+    return err('Bad Gateway: could not reach Gemini', 502, origin);
   }
 };
